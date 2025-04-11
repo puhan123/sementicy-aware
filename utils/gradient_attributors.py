@@ -24,13 +24,7 @@ def sample_abs(key, attributed_matrices, activation_cache, accumulated_gradient)
     print(f"{len(activation_cache[key])=}, {len(activation_cache[key])=}")
     for sample_idx in range(len(accumulated_gradient[key])):
         activation_difference = activation_cache[key][sample_idx]
-        # print(f"{dims_to_reduce=}")
-        # activation_difference = torch.sum(activation_difference, dim=dims_to_reduce)  # Reduce to per input neuron.
-
         gradient_information = accumulated_gradient[key][sample_idx]
-        # print(f"gradient {dims_to_reduce=}")
-        # gradient_information = torch.sum(gradient_information, dim=dims_to_reduce)
-
         importance_matrix = torch.abs(torch.matmul(gradient_information.T, activation_difference))
         attributed_matrices[key] += importance_matrix
     activation_cache[key] = None
@@ -40,18 +34,12 @@ def sample_abs(key, attributed_matrices, activation_cache, accumulated_gradient)
 def getActivation(name, activation_cache, activation_outputs_cache=None): # A closure that captures the activation cache
     # The hook function
     def hook(module, input, output):
-        # print(f"DEBUG: input.shape: {input[0].shape}, output.shape: {output.shape}")
-        # weights = module.weight.data  # Get the weights
-        # print(f"DEBUG: activations_output shape: {activations_output.shape=}, weights shape: {weights.shape=}")
-        # TODO: add masking, by changing arguments of getActivation
         with torch.no_grad():
             # Cache activations
             if name not in activation_cache:
-                activation_cache[name] = [] # (samples x seq len) x hidden size, elements are per batch
-            # activations = torch.sum(activations, dim=1)
-            activations = input[0].detach().to("cpu")  # Get the input activations
-            reshaped_activations = activations.reshape(-1, activations.shape[-1]) # batch size x hid dim
-            # print(f"DEBUG: reshaped_activations shape, should be (batch size x seq len) x hidden size: {reshaped_activations.shape}")
+                activation_cache[name] = [] 
+            activations = input[0].detach().to("cpu") 
+            reshaped_activations = activations.reshape(-1, activations.shape[-1]) 
             activation_cache[name].append(reshaped_activations)  # (batch size x seq len) x hidden size
             if activation_outputs_cache != None:
                 if name not in activation_outputs_cache:
@@ -109,10 +97,8 @@ def weight_prod_contrastive_postprocess(attributed_matrices, model, corrupt_mode
             print("Warning: Print statement failed")
     return attributed_matrices
 
-def make_grad_computation_hook(key, attributed_matrices=None, activation_cache=None, accumulated_gradient=None, attributor_function=None):
+def make_grad_computation_hook():
     def hook(param):
-        # if key in attributed_matrices:
-        #     attributor_function(key, attributed_matrices, activation_cache, accumulated_gradient)
         param.grad = None
     return hook
 
