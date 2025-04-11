@@ -4,7 +4,8 @@ datasets_directory/Spider/database
 datasets_directory/Spider/data
 datasets_directory/Spider/third_party/nltk_data/tokenizers
 datasets_directory/Spider/third_party/test-suite-sql-eval
-utils/gradient_attributors_old.py
+utils/gradient_attributors_implementation_1.py
+utils/gradient_attributors_implementation_2.py
 misc
 archive
 scripts/testing

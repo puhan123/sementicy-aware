@@ -12,15 +12,55 @@ try:
 except:
     print("Logging change failed.")
 
-"""A simplified version of the gradient capturing used for TACQ, which no longer needs to use decomposition but simply moves gradients to CPU once computed."""
+"""A simplified version of the gradient capturing used for TACQ."""
 
 #DEBUG
 # from torch.utils.viz._cycles import warn_tensor_cycles
 # warn_tensor_cycles()
 from torch.cuda.memory import _record_memory_history, _dump_snapshot
 
-def sample_abs(key, accumulated_gradient, param):
-    return accumulated_gradient[key] + torch.abs(param.grad).to("cpu")
+def sample_abs(key, attributed_matrices, activation_cache, accumulated_gradient):
+    """Absolute value on every sample's dL/dW. Gradient information shows the possible perturbations. It makes no sense for perturbations to 'cancel out' therefore, we take the absolute value"""
+    print(f"{len(activation_cache[key])=}, {len(activation_cache[key])=}")
+    for sample_idx in range(len(accumulated_gradient[key])):
+        activation_difference = activation_cache[key][sample_idx]
+        gradient_information = accumulated_gradient[key][sample_idx]
+        importance_matrix = torch.abs(torch.matmul(gradient_information.T, activation_difference))
+        attributed_matrices[key] += importance_matrix
+    activation_cache[key] = None
+    accumulated_gradient[key] = None
+    return attributed_matrices
+
+def getActivation(name, activation_cache, activation_outputs_cache=None): # A closure that captures the activation cache
+    # The hook function
+    def hook(module, input, output):
+        with torch.no_grad():
+            # Cache activations
+            if name not in activation_cache:
+                activation_cache[name] = [] 
+            activations = input[0].detach().to("cpu") 
+            reshaped_activations = activations.reshape(-1, activations.shape[-1]) 
+            activation_cache[name].append(reshaped_activations)  # (batch size x seq len) x hidden size
+            if activation_outputs_cache != None:
+                if name not in activation_outputs_cache:
+                    activation_outputs_cache[name] = []
+                activations_output = output[0].detach().to("cpu")
+                reshaped_activations_output = activations_output.reshape(-1, activations_output.shape[-1])
+                activation_outputs_cache[name].append(reshaped_activations_output)
+    return hook
+
+def getGradients(name, gradient_cache, attributed_matrices, activation_cache, attributor_function):
+    # backward hook
+    def hook(module, grad_input, grad_output):
+        with torch.no_grad():
+            if name not in gradient_cache:  
+                gradient_cache[name] = []
+            grad_to_save = grad_output[0].detach().to("cpu")
+            grad_to_save = grad_to_save.reshape(-1, grad_output[0].shape[-1])
+            
+            gradient_cache[name].append(grad_to_save)
+        return None
+    return hook
 
 @torch.no_grad
 def weight_prod_contrastive_postprocess(attributed_matrices, model, corrupt_model):
@@ -57,32 +97,39 @@ def weight_prod_contrastive_postprocess(attributed_matrices, model, corrupt_mode
             print("Warning: Print statement failed")
     return attributed_matrices
 
-
+def make_grad_computation_hook():
+    def hook(param):
+        param.grad = None
+    return hook
 
 def grad_attributor(args, model_name, corrupt_model_name, dataset, masking_function=None, 
                     loss_func=CrossEntropyLoss(), checkpoints_dir=None, attributor_function=sample_abs, 
                     postprocess_function=lambda x, y, z: x, record_memory_history=False, backward_in_full_32_precision=True):
     ## Define Gradient Capturing Aparatus
     accumulated_gradient = {}
-    def make_clear_grad_hook(key, accumulated_gradient):
-        def hook(param):
-            if key in accumulated_gradient:
-                accumulated_gradient[key] = attributor_function(key, accumulated_gradient, param)
-            param.grad = None
-        return hook
+    activation_cache = {}
+    attributed_matrices = {}
     ## Load model
     model = load_model(engine=model_name, checkpoints_dir=checkpoints_dir, full_32_precision=backward_in_full_32_precision, brainfloat=False)["model"]
-    ## Setup gradients to accumulate
+    ## Setup attributed_matrices to accumulate
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
-            accumulated_gradient.update({".".join((name, key)): torch.zeros_like(val).detach().to("cpu") for key, val in module.named_parameters() if key == "weight"})
-    accumulated_gradient = filter_importances_dict(accumulated_gradient)
+            attributed_matrices.update({".".join((name, key)): torch.zeros_like(val).detach().to("cpu") for key, val in module.named_parameters() if key == "weight"})
+    attributed_matrices = filter_importances_dict(attributed_matrices)
     ## Setup hooks
     hook_handles = []
+    for name, module in model.named_modules():
+        if (isinstance(module, (nn.Linear))):
+            hook_fn = getActivation(name + ".weight", activation_cache)  # Get the hook function
+            hook_handle = module.register_forward_hook(hook_fn)  # Register the hook function
+            hook_handles.append(hook_handle)
+            gradient_hook_fn = getGradients(name + ".weight", attributed_matrices=attributed_matrices, activation_cache=activation_cache, gradient_cache=accumulated_gradient, attributor_function=attributor_function)
+            hook_handle_grad = module.register_full_backward_hook(gradient_hook_fn)
+            hook_handles.append(hook_handle_grad)
     for name, param in model.named_parameters():
         if isinstance(param, torch.Tensor):
-            grad_hook = make_clear_grad_hook(name, accumulated_gradient)
-            hook_handle = param.register_post_accumulate_grad_hook(grad_hook)
+            make_grad_hook = make_grad_computation_hook(name, attributed_matrices, activation_cache, accumulated_gradient, attributor_function)
+            hook_handle = param.register_post_accumulate_grad_hook(make_grad_hook)
             hook_handles.append(hook_handle)
     ## Cache all gradients for the clean model
     start_time = time.time()
@@ -124,7 +171,7 @@ def grad_attributor(args, model_name, corrupt_model_name, dataset, masking_funct
     corrupt_model = load_model(engine=corrupt_model_name, checkpoints_dir=checkpoints_dir, full_32_precision=False, brainfloat=False, device_map="cpu")["model"].to("cpu")
     total_time = time.time() - start_time
     print(f"Time Used To Capture Importances: {total_time}")
-    print(f"Scores {accumulated_gradient=}")
-    tcq_scores = postprocess_function(accumulated_gradient, model, corrupt_model)
+    print(f"Scores {attributed_matrices=}")
+    tcq_scores = postprocess_function(attributed_matrices, model, corrupt_model)
     return tcq_scores
 
