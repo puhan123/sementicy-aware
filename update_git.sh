@@ -1,3 +1,0 @@
-# find ./gptq/ ./experiment_lora_sweep/ ./MMLU_experiments/ ./experimental_model_viewer/ ./experiment2_vector_tradeoff/ ./experiment1_layer_localization/ ./experiment3_mixing/ -size -4M -type f -print0 | xargs -0 git add
-# find . ./SpQR-main/ ./SliM-LLM-main/slim-llm/ ./SqueezeLLM-gradients/ ./SqueezeLLM-main/ ./SqueezeLLM-main/quantization/ -maxdepth 1 -size -4M -type f -print0 | xargs -0 git add
-git add -A
