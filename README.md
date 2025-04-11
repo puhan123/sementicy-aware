@@ -1,5 +1,6 @@
 # Task Circuit Quantization
-Official Repository for Task Circuit Quantization (TaCQ)
+Official Repository for [Task Circuit Quantization (TaCQ)](https://arxiv.org/abs/2504.07389)
+[https://arxiv.org/abs/2504.07389](https://arxiv.org/abs/2504.07389)
 
 Authors: Hanqi Xiao, [Yi-Lin Sung](https://ylsung.github.io/), [Elias Stengel-Eskin](https://esteng.github.io/), [Mohit Bansal](https://www.cs.unc.edu/~mbansal/)
 
