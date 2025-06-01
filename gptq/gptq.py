@@ -44,6 +44,8 @@ class GPTQ:
             self.important_mask = important_mask.clone()  
             self.final_mask = self.important_mask.clone() # both are floats with only binary values
 
+        self.save_quant_dict = dict()
+
     def add_batch(self, inp, out):
         if DEBUG:
             self.inp1 = inp
@@ -75,7 +77,7 @@ class GPTQ:
         # print(f"VERIFY: self.H.shape {self.H.shape} == col x col")
 
     def fasterquant(
-        self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False
+        self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False, save_quantization = False
     ):
         W = self.layer.weight.data.clone()
         ORIGINAL_W = self.layer.weight.data.clone()
@@ -84,6 +86,23 @@ class GPTQ:
         if isinstance(self.layer, transformers.Conv1D):
             W = W.t()
         W = W.float()
+
+        # INIT SPQR FORMAT SAVING UTILITIES
+        save_quant_dict = dict()
+        if save_quantization:
+            save_quant_dict["quant_weights"] = []
+            save_quant_dict["quant_layer_scale"] = []
+            save_quant_dict["quant_layer_zeros"] = []
+            save_quant_dict["quant_layer_scale_qq_scale"] = []
+            save_quant_dict["quant_layer_scale_qq_zero"] = []
+            save_quant_dict["quant_layer_zero_qq_scale"] = []
+            save_quant_dict["quant_layer_zero_qq_zero"] = []
+            save_quant_dict["save_float_dtype"] = self.layer.weight.dtype
+            save_quant_dict["outliers_matrix"] = torch.zeros(
+                W.shape, dtype=save_quant_dict["save_float_dtype"]
+            ).to(
+                W.device
+            )  # shape = [out_features, in_features]
 
         tick = time.time()
 
@@ -217,6 +236,36 @@ class GPTQ:
                             idx = perm[idx]
                         self.quantizer = groups[idx // groupsize]
 
+                # SPQR Saving Utility, save result of quantizer.find_params
+                if save_quantization:
+                    if quantizer.qq_scale_bits is not None:
+                        save_quant_dict["quant_layer_scale"].append(quantizer.quant_scale.to(torch.int8))
+                        save_quant_dict["quant_layer_scale_qq_scale"].append(
+                            quantizer.qq_scale.scale.to(save_quant_dict["save_float_dtype"])
+                        )
+                        save_quant_dict["quant_layer_scale_qq_zero"].append(
+                            quantizer.qq_scale.zero.to(save_quant_dict["save_float_dtype"])
+                        )
+                    else:
+                        save_quant_dict["quant_layer_scale"].append(
+                            quantizer.scale.to(save_quant_dict["save_float_dtype"])
+                        )
+
+                    if quantizer.qq_zero_bits is not None and (
+                        (not quantizer.round_zero) or quantizer.qq_zero_bits < quantizer.bits
+                    ):
+                        save_quant_dict["quant_layer_zeros"].append(quantizer.quant_zero.to(torch.int8))
+                        save_quant_dict["quant_layer_zero_qq_scale"].append(
+                            quantizer.qq_zero.scale.to(save_quant_dict["save_float_dtype"])
+                        )
+                        save_quant_dict["quant_layer_zero_qq_zero"].append(
+                            quantizer.qq_zero.zero.to(save_quant_dict["save_float_dtype"])
+                        )
+                    else:
+                        save_quant_dict["quant_layer_zeros"].append(
+                            quantizer.zero.to(save_quant_dict["save_float_dtype"])
+                        )
+
                 w_preserved = w*self.important_mask[:, i1 + i]  # At the first iteration of the first block. i1 == 0 and i == 0 -> we correctly select the 0th column of the mask.
                 w_without_important = w*(~self.important_mask[:, i1 + i])  # zero the important weights we don't need to quantize revent overflow / errors
                 q = self.quantizer.quantize(w_without_important.unsqueeze(1)).flatten() # .quantize quantizes only the weights passed in as arguments, and uses the state of the Quantizer object, determined by .configure and .find_params
@@ -225,9 +274,17 @@ class GPTQ:
                 # print(f"VERIFY: Verified torch.all(q == q*(~self.important_mask[:, i1 + i])) == True")
                 assert torch.all(q == q*(~self.important_mask[:, i1 + i])) == True  # Verifies all important weights have been quantized to 0 prior to adding them back in
 
+                if save_quantization:
+                    save_quant_dict["outliers_matrix"][:, i1 + i] = w_preserved
+
+                if save_quantization:
+                    from quant import spqr_real_dequantize, spqr_real_quantize
+                    spqr_quantized_weights = spqr_real_quantize(w_without_important.unsqueeze(1)).flatten()
+                    save_quant_dict["quant_weights"].append(spqr_quantized_weights.to(torch.int8))
+
                 q = q + w_preserved  # Add back the preserved weights
                 # print(f"VERIFY: torch.sum(w_preserved) == 0 {torch.sum(w_preserved) == 0} should not be True always; torch.sum(w_preserved) {torch.sum(w_preserved)}")
-
+                
                 # q has same shape as w: [out_features]
                 # Update the quantized weights Q1 and losses in the block
                 Q1[:, i] = q
@@ -268,6 +325,16 @@ class GPTQ:
         self.layer.weight.data = Q.reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype)
         if DEBUG:
             print(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
+
+        if save_quantization:
+            save_quant_dict["perm"] = perm.to(torch.int32)
+            save_quant_dict["keep_last_columns"] = 0
+            save_quant_dict["blocksize"] = 128
+            save_quant_dict["weight_shape"] = W.shape
+            save_quant_dict["groupsize"] = groupsize if groupsize != -1 else W.shape[1]
+            save_quant_dict["quant_weights"] = torch.cat(save_quant_dict["quant_weights"], dim=1)
+            save_quant_dict["outliers_matrix"] = save_quant_dict["outliers_matrix"].to_sparse()
+            self.save_quant_dict = save_quant_dict
 
     def free(self):
         if DEBUG:

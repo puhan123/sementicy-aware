@@ -179,9 +179,19 @@ def llama_sequential(model, dataloader, dev):
                     print(i, name, f"bits = {gptq[name].quantizer.bits}")
                     print('Quantizing ...')
                     gptq[name].fasterquant(
-                        percdamp=args.percdamp, groupsize=args.groupsize, actorder=args.act_order, static_groups=args.static_groups
+                        percdamp=args.percdamp, groupsize=args.groupsize, actorder=args.act_order, static_groups=args.static_groups, save_quantization = bool(args.save)
                     )
                     quantizers['model.layers.%d.%s' % (i, name)] = gptq[name].quantizer
+
+                    # Save in SPQR format:
+                    if args.save:
+                        if not gptq[name].save_quant_dict:
+                            raise Exception("Error: save_quant_dict not populated, ensure gptq[name].fasterquant is ran with save_quantization = True")
+                        gptq[name].save_quant_dict["sublayer_name"] = name
+                        full_path = args.save + "/" + str(i) + "/"
+                        os.makedirs(full_path, exist_ok=True)
+                        torch.save(gptq[name].save_quant_dict, full_path + name)
+
                     gptq[name].free()
 
         for j in range(len(dataloader)):
@@ -449,6 +459,21 @@ if __name__ == '__main__':
     if args.save:
         llama_pack3(model, quantizers)
         torch.save(model.state_dict(), args.save)
+
+    if args.save:
+        # SPQR SAVING STRATEGY
+        torch.save(vars(args), args.save + "/args.pt")
+        # try:
+        #     already_saved_weights = set()
+        #     for name, layer in nn.ModuleList(model.model.layers).named_modules():
+        #         if isinstance(layer, (nn.Conv2d, nn.Linear)):
+        #             already_saved_weights.add(layer.weight)
+        #     not_quantized_weights = {
+        #         name: param for name, param in model.named_parameters() if param not in already_saved_weights
+        #     }
+        #     torch.save(not_quantized_weights, args.save + "/not_quantized_weights.pt")
+        # except:
+        #     print("Saving unquantized model failed")
 
     if args.save_in_16bits:
         def print_model_layer_dtype(model):

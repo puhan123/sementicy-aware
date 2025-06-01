@@ -9,6 +9,15 @@ def quantize(x, scale, zero, maxq):  # Normal Linear Quantization
     q = torch.clamp(torch.round(x / scale) + zero, 0, maxq)
     return scale * (q - zero)
 
+def spqr_real_quantize(x, scale, zero, maxq):
+    if maxq < 0:
+        return (x > scale / 2).float() * scale + (x < zero / 2).float() * zero
+    q = torch.clamp(torch.round(x / scale) + zero, 0, maxq)
+    return q
+
+def spqr_real_dequantize(q, scale, zero):
+    return scale * (q - zero)
+
 class Quantizer(nn.Module):
 
     def __init__(self, shape=1):
@@ -16,6 +25,9 @@ class Quantizer(nn.Module):
         self.register_buffer('maxq', torch.tensor(0))
         self.register_buffer('scale', torch.zeros(shape))
         self.register_buffer('zero', torch.zeros(shape))
+        self.qq_scale_bits = None
+        self.qq_zero_bits = None
+        
 
     def configure(
         self,
