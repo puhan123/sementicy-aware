@@ -59,9 +59,12 @@ def weight_prod_contrastive_postprocess(attributed_matrices, model, corrupt_mode
 
 
 
-def grad_attributor(args, model_name, corrupt_model_name, dataset, masking_function=None, 
-                    loss_func=CrossEntropyLoss(), checkpoints_dir=None, attributor_function=sample_abs, 
+def grad_attributor(args, model_name, corrupt_model_name, dataset, masking_function=None,
+                    loss_func=CrossEntropyLoss(), checkpoints_dir=None, attributor_function=sample_abs,
                     postprocess_function=lambda x, y, z: x, record_memory_history=False, backward_in_full_32_precision=True):
+    if not getattr(args, "enable_gradient_importances", False):
+        print("Gradient accumulation disabled; returning empty importances.")
+        return {}
     ## Define Gradient Capturing Aparatus
     accumulated_gradient = {}
     def make_clear_grad_hook(key, accumulated_gradient):
@@ -87,12 +90,17 @@ def grad_attributor(args, model_name, corrupt_model_name, dataset, masking_funct
     ## Cache all gradients for the clean model
     start_time = time.time()
     cumulation_counter = 0
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
-    for example in dataloader:
+    batch_size = max(1, getattr(args, "calibration_batch_size", 1))
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    for batch_index, example in enumerate(dataloader):
         example["input_ids"] = example["input_ids"].to(args.device)
         try:
-            (cumulation_counter % 5 == 0) and print(f"Processing sample {cumulation_counter}")
-        except:
+            if batch_index % 5 == 0:
+                print(
+                    f"Processing batch {batch_index}"
+                    f" (samples processed: {cumulation_counter})"
+                )
+        except Exception:
             pass
         outputs = model(**example)
         shift_logits = outputs.logits[..., :-1, :].contiguous()  # Get rid of the prediction from the last token, since we don't have a label for it
@@ -109,9 +117,10 @@ def grad_attributor(args, model_name, corrupt_model_name, dataset, masking_funct
             for i, x in model.named_parameters():
                 print("Grad should be None if save_memory=True:", f"{x.grad=}, x should not require grad {x.requires_grad=} {x.is_leaf=} {x.device=}")
                 break
-        del shift_logits, shift_labels, loss
-        del outputs, example
-        cumulation_counter += 1
+        batch_samples = example["input_ids"].size(0)
+        del shift_logits, shift_labels, loss, outputs
+        del example
+        cumulation_counter += batch_samples
     print(f"samples processed: {cumulation_counter}")
     # Remove all handles, dataloader, model, and clear gpu
     for hook in hook_handles:

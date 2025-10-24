@@ -15,6 +15,7 @@ huggingface_hub.login(token=token)
 from utils.model_utils import load_model
 from utils.gradient_attributors import grad_attributor, sample_abs, weight_prod_contrastive_postprocess
 from utils.measurement_utils import filter_importances_dict, preprocess_calibration_datasets, save_accumulated_importances
+from utils.activation_cache import collect_activations_to_cache
 
 def main(args):
     print(f"{datetime.datetime.now()=}")
@@ -41,13 +42,30 @@ def main(args):
     model_info = load_model(args.model, checkpoints_dir=args.checkpoints_dir, full_32_precision=full_32_precision, brainfloat=brainfloat)
     model, tokenizer = model_info["model"], model_info["tokenizer"]
     dataset = preprocess_calibration_datasets(args, tokenizer=tokenizer, indices_for_choices=None, n_calibration_points=args.n_calibration_points)
+    if getattr(args, "collect_activations", False):
+        activation_cache_dir = args.activation_cache_dir or os.path.join(
+            args.results_dir, args.run_name, "activation_cache"
+        )
+        os.makedirs(activation_cache_dir, exist_ok=True)
+        print(f"Capturing activations into {activation_cache_dir}")
+        collect_activations_to_cache(
+            model=model,
+            dataset=dataset,
+            cache_root=activation_cache_dir,
+            batch_size=max(1, args.activation_batch_size),
+            device=args.device,
+            dtype=args.activation_dtype,
+            use_sparse=args.activation_use_sparse,
+            eps=args.activation_eps,
+        )
+        print(f"Activation manifest saved to {os.path.join(activation_cache_dir, 'manifest.json')}")
+    del model, model_info
+    torch.cuda.empty_cache()
     importances = None
     if args.selector_type == "sample_abs_weight_prod_contrastive":
-        del model, model_info
-        importances = grad_attributor(args, args.model, args.corrupt_model, dataset, checkpoints_dir=args.checkpoints_dir, attributor_function=sample_abs, postprocess_function=weight_prod_contrastive_postprocess)  
+        importances = grad_attributor(args, args.model, args.corrupt_model, dataset, checkpoints_dir=args.checkpoints_dir, attributor_function=sample_abs, postprocess_function=weight_prod_contrastive_postprocess)
     elif args.selector_type == "sample_abs_weight_prod_contrastive_sm16bit":
-        del model, model_info
-        importances = grad_attributor(args, args.model, args.corrupt_model, dataset, checkpoints_dir=args.checkpoints_dir, attributor_function=sample_abs, postprocess_function=weight_prod_contrastive_postprocess, record_memory_history=False, backward_in_full_32_precision=False)  
+        importances = grad_attributor(args, args.model, args.corrupt_model, dataset, checkpoints_dir=args.checkpoints_dir, attributor_function=sample_abs, postprocess_function=weight_prod_contrastive_postprocess, record_memory_history=False, backward_in_full_32_precision=False)
     else:
         raise Exception(f"Selector type {args.selector_type} not supported")
     importances = filter_importances_dict(importances, configuration="mlp_atten_only")
@@ -77,11 +95,19 @@ if __name__ == "__main__":
     parser.add_argument("--save_in_float16", action="store_true")  # For debugging and replication only
     parser.add_argument("--ntrain", "-k", type=int, default=5)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--calibration_batch_size", type=int, default=1)
     parser.add_argument("--eval_start_p", type=float, default=.75)
     parser.add_argument("--train_end_p", type=float, default=.75)
     parser.add_argument("--max_length", type=int, default=2048)
     parser.add_argument("--n_calibration_points", type=int, default=128)
     parser.add_argument("--force_recompute", action="store_true")
+    parser.add_argument("--collect_activations", action="store_true")
+    parser.add_argument("--activation_cache_dir", type=str, default=None)
+    parser.add_argument("--activation_batch_size", type=int, default=1)
+    parser.add_argument("--activation_dtype", type=str, default="float32")
+    parser.add_argument("--activation_use_sparse", action="store_true")
+    parser.add_argument("--activation_eps", type=float, default=1e-6)
+    parser.add_argument("--enable_gradient_importances", action="store_true")
     args = parser.parse_args()
     args.unsupervised = True
     random.seed(int(args.serial_number))
