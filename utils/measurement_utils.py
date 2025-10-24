@@ -1,5 +1,7 @@
 import json
 import os
+from typing import Callable, Dict, List, Optional
+
 from matplotlib import pyplot as plt
 import numpy as np
 import torch
@@ -15,6 +17,9 @@ from datasets_directory.Spider.Spider_utils import Spider_N_Shot_Dataset
 from datasets_directory.PretrainDatasets.wikitext2_utils import Wikitext2_Dataset
 
 from datasets_directory.PretrainDatasets.c4_utils import C4_New_Dataset
+
+KAPPA_SCORING_METHODS = {"mean_abs", "sum_abs", "l2"}
+KAPPA_CI_TYPES = {"none", "bootstrap"}
 
 """Dataset Loading"""
 def preprocess_calibration_datasets(args, tokenizer, indices_for_choices, n_calibration_points=128, seqlen=2048):
@@ -88,3 +93,123 @@ def filter_importances_dict(importances, configuration="mlp_atten_only"):
     elif "linear_only":
         raise Exception("Not implemented")
     return importances
+
+
+def _get_kappa_scoring_function(scoring_method: str) -> Callable[[torch.Tensor], torch.Tensor]:
+    scoring_method = scoring_method.lower()
+    if scoring_method == "mean_abs":
+        return lambda weights: weights.abs().mean()
+    if scoring_method == "sum_abs":
+        return lambda weights: weights.abs().sum()
+    if scoring_method == "l2":
+        return lambda weights: torch.linalg.vector_norm(weights, ord=2)
+    raise ValueError(f"Unsupported scoring method: {scoring_method}. Expected one of {sorted(KAPPA_SCORING_METHODS)}")
+
+
+def _bootstrap_confidence_interval(
+    values: torch.Tensor,
+    scoring_fn: Callable[[torch.Tensor], torch.Tensor],
+    alpha: float,
+    num_samples: int,
+    random_state: Optional[np.random.Generator],
+) -> Optional[Dict[str, float]]:
+    flat_values = values.detach().cpu().reshape(-1)
+    if flat_values.numel() == 0:
+        return None
+    rng = random_state or np.random.default_rng()
+    bootstrap_scores = []
+    values_np = flat_values.numpy()
+    for _ in range(num_samples):
+        resampled = rng.choice(values_np, size=values_np.shape[0], replace=True)
+        resampled_tensor = torch.from_numpy(resampled).to(flat_values.dtype)
+        bootstrap_scores.append(float(scoring_fn(resampled_tensor)))
+    lower_q = alpha / 2
+    upper_q = 1 - lower_q
+    low = float(np.quantile(bootstrap_scores, lower_q))
+    high = float(np.quantile(bootstrap_scores, upper_q))
+    return {"type": "bootstrap", "low": low, "high": high}
+
+
+def compute_kappa_scores(
+    importances: Dict[str, torch.Tensor],
+    scoring_method: str = "mean_abs",
+    ci_type: str = "none",
+    ci_alpha: float = 0.05,
+    ci_samples: int = 1000,
+    ci_seed: Optional[int] = None,
+) -> List[Dict[str, object]]:
+    if scoring_method.lower() not in KAPPA_SCORING_METHODS:
+        raise ValueError(f"Unsupported scoring method: {scoring_method}. Expected one of {sorted(KAPPA_SCORING_METHODS)}")
+    if ci_type.lower() not in KAPPA_CI_TYPES:
+        raise ValueError(f"Unsupported ci_type: {ci_type}. Expected one of {sorted(KAPPA_CI_TYPES)}")
+
+    scoring_fn = _get_kappa_scoring_function(scoring_method)
+    rng = None
+    if ci_type.lower() == "bootstrap":
+        if not 0 < ci_alpha < 1:
+            raise ValueError("ci_alpha must be between 0 and 1 when using bootstrap confidence intervals")
+        if ci_samples <= 0:
+            raise ValueError("ci_samples must be a positive integer when using bootstrap confidence intervals")
+        if ci_seed is not None:
+            rng = np.random.default_rng(ci_seed)
+
+    scores: List[Dict[str, object]] = []
+    for module_name, tensor in importances.items():
+        if not isinstance(tensor, torch.Tensor):
+            continue
+        if tensor.ndim < 2:
+            # Skip tensors that cannot be interpreted as neuron weight matrices
+            continue
+        flattened = tensor.detach().to(torch.float32).cpu().reshape(tensor.shape[0], -1)
+        for neuron_idx in range(flattened.shape[0]):
+            neuron_weights = flattened[neuron_idx]
+            score_value = float(scoring_fn(neuron_weights))
+            ci: Optional[Dict[str, float]] = None
+            if ci_type.lower() == "bootstrap":
+                ci = _bootstrap_confidence_interval(
+                    neuron_weights,
+                    scoring_fn=scoring_fn,
+                    alpha=ci_alpha,
+                    num_samples=ci_samples,
+                    random_state=rng,
+                )
+            scores.append(
+                {
+                    "module": module_name,
+                    "neuron_index": int(neuron_idx),
+                    "score": score_value,
+                    "ci": ci,
+                    "scoring_method": scoring_method,
+                }
+            )
+    scores.sort(key=lambda entry: entry["score"], reverse=True)
+    return scores
+
+
+def save_kappa_scores(
+    args,
+    kappa_scores: List[Dict[str, object]],
+    save_path: Optional[str] = None,
+) -> str:
+    if not save_path:
+        save_path = os.path.join(args.results_dir, args.run_name, f"kappa_scores_{args.serial_number}.json")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    serializable_scores = []
+    for entry in kappa_scores:
+        serialized_entry = {
+            "module": entry["module"],
+            "neuron_index": entry["neuron_index"],
+            "score": float(entry["score"]),
+            "scoring_method": entry.get("scoring_method"),
+        }
+        ci = entry.get("ci")
+        if ci is not None:
+            serialized_entry["ci"] = {
+                "type": ci.get("type"),
+                "low": float(ci.get("low")),
+                "high": float(ci.get("high")),
+            }
+        serializable_scores.append(serialized_entry)
+    with open(save_path, "w", encoding="utf-8") as fp:
+        json.dump(serializable_scores, fp, indent=2)
+    return save_path
