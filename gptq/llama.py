@@ -16,6 +16,7 @@ from gptq.gptq import *
 from modelutils import *
 from quant import *
 from transformers import AutoModelForCausalLM
+from modelscope import AutoTokenizer, AutoModelForCausalLM
 
 def get_llama(model):
     import torch
@@ -32,8 +33,11 @@ def get_llama(model):
     elif "Qwen" in model:
         model = AutoModelForCausalLM.from_pretrained(model, torch_dtype='auto')
     else:
-        model = LlamaForCausalLM.from_pretrained(model, torch_dtype='auto')
-    model.seqlen = 2048
+        print(model)
+        model = LlamaForCausalLM.from_pretrained(model, torch_dtype=None, device_map=None,low_cpu_mem_usage=False, )#LlamaForCausalLM.from_pretrained
+
+
+    model.seqlen = 1024#2048
     return model
 
 @torch.no_grad()
@@ -427,11 +431,11 @@ if __name__ == '__main__':
     print("args.model for get_llama:", args.model)
     model = get_llama(args.model)
 
-    # Update args.model to the base model name and loadstring
-    args.model = args.model.split("/")[-1].split("_")[0]
-    from utils.model_utils import model_loadstring_dict
-    args.model = model_loadstring_dict[args.model] + "/" + args.model
-    print("args.model for post processing:", args.model)
+    # # Update args.model to the base model name and loadstring
+    # args.model = args.model.split("/")[-1].split("_")[0]
+    # from utils.model_utils import model_loadstring_dict
+    # args.model = model_loadstring_dict[args.model] + "/" + args.model
+    # print("args.model for post processing:", args.model)
 
     model.eval()
 

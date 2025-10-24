@@ -61,3 +61,24 @@ source scripts/examples/evaluate_llama3_8b.sh
 ```
 
 After the gradient based weight importance information have been collected for a particular conditioning dataset and base bit-width, it is possible to increase/decrease the number of outliers and thus adjust compression ratio without recollecting the gradients, saving the majority of the quantization time. Weight importance information is automatically saved at user defined `importances_dir`.
+
+## Contextual importance metrics and κᵢ rankings
+
+The repository now exposes four interchangeable contextual importance (cᵢ) estimators that can be combined with activation-based φᵢ scores via `utils.neuron_metrics.compute_kappa`:
+
+* **`lse`** – difference between the log-sum-exp of clean versus corrupted logits. Works without target tokens and is a numerically stable proxy for marginal likelihood shifts.
+* **`target_logit`** – measures how much the target token logit changes when a neuron is ablated. Useful when you only care about the reference answer token.
+* **`logit_diff`** – contrasts the target logit variation with a softmax-weighted mixture of competitor tokens. Pair this with a moderately aggressive `top_k` (16–64) and temperature of 1.0 to suppress noisy tail tokens.
+* **`kl`** – computes the KL divergence between clean and corrupted distributions. We recommend `top_k=64` and a slightly lower temperature such as 0.7 when you want to emphasise high-probability competitors.
+
+In all cases the resulting cᵢ tensors can be fused with φᵢ through either the plain product or the geometric mean. We observed that `combine="product"` matches the weighting strategy adopted in the Task-Circuit Quantization paper, while `"geometric_mean"` dampens extremely peaky φᵢ for heterogeneous layers.
+
+### Recommended hyper-parameters
+
+| Scenario | Suggested settings |
+| --- | --- |
+| General task circuits | `ci_method="logit_diff"`, `top_k=32`, `temperature=1.0`, `combine="product"` |
+| Instruction tuning checkpoints | `ci_method="target_logit"` (no `top_k` required), `combine="geometric_mean"` to balance sparse φᵢ |
+| Sanity sweeps or regression tests | `ci_method="lse"`, leave `top_k=None` and reuse the default temperature |
+
+Compared to the reference implementation released with the paper, this repository vectorises the contextual metrics, exposes consistent tensor broadcasting across layers, and allows optional competitor pruning via `top_k`. The original code paths always considered the full vocabulary and interleaved masking logic with model forward hooks, which made scripted evaluation difficult. Here the `compute_ci` helper accepts pre-recorded logits, letting you plug the metrics into standalone demos such as `scripts/compare_importance_metrics.py` without needing to instantiate full quantisation runs.

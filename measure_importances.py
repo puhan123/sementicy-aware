@@ -9,9 +9,9 @@ load_dotenv()
 # ML / Data
 import numpy as np
 import torch
-import huggingface_hub
-token = os.getenv('HUGGINGFACE_TOKEN')
-huggingface_hub.login(token=token)
+# import huggingface_hub
+# token = os.getenv('HUGGINGFACE_TOKEN')
+# huggingface_hub.login(token=token)
 from utils.model_utils import load_model
 from utils.gradient_attributors import grad_attributor, sample_abs, weight_prod_contrastive_postprocess
 from utils.measurement_utils import (
@@ -46,9 +46,13 @@ def main(args):
     elif args.gradient_dtype == "float16":
         full_32_precision = False
         brainfloat = False
-    model_info = load_model(args.model, checkpoints_dir=args.checkpoints_dir, full_32_precision=full_32_precision, brainfloat=brainfloat)
+    model_info = load_model(args.model, checkpoints_dir=args.checkpoints_dir, device_map =None,full_32_precision=full_32_precision, brainfloat=brainfloat)
     model, tokenizer = model_info["model"], model_info["tokenizer"]
-    dataset = preprocess_calibration_datasets(args, tokenizer=tokenizer, indices_for_choices=None, n_calibration_points=args.n_calibration_points)
+    dataset = preprocess_calibration_datasets(args, tokenizer=tokenizer, indices_for_choices=None, n_calibration_points=args.n_calibration_points,
+
+    data_root=args.data_root,           # 新增
+    prefer_local=args.prefer_local      # 新增
+                                              )
     importances = None
     if args.selector_type == "sample_abs_weight_prod_contrastive":
         del model, model_info
@@ -94,6 +98,10 @@ if __name__ == "__main__":
     parser.add_argument("--serial_number", type=int, default=0, required=True)
     parser.add_argument("--save_importances_pt_path", type=str, default=None, required=True)
     parser.add_argument("--dataset", type=str, default="MMLU", required=True) 
+    
+    parser.add_argument("--data_root", type=str, default=os.path.join(os.path.dirname(__file__), "datasets_directory"))
+    parser.add_argument("--prefer_local", action="store_true", help="优先从本地 data_root 读取，不访问 Hub")
+
     parser.add_argument("--selector_type", type=str, default="grad", required=True)
     parser.add_argument("--model", type=str, default="Meta-Llama-3-8B", required=True) 
     # Optional arguments
