@@ -8,14 +8,16 @@ model_loadstring_dict = {"Qwen2.5-32B-Instruct": "Qwen", "Qwen2.5-7B": "Qwen", "
 def load_model(engine, checkpoints_dir, device_map = "auto", full_32_precision=False, brainfloat=False):
     """Can handle many types of models."""
 
+
     if engine.endswith("quantized_model"):  # FULLLY SAVED MODEL
-        if "+" in engine:
-            base_model_name = engine.split("+")[0].split("_")[0]
-        else:
-            base_model_name = engine.split("_")[0]
-        loadstring = model_loadstring_dict[base_model_name] + "/" +  base_model_name
+        # if "+" in engine:
+        #     base_model_name = engine.split("+")[0].split("_")[0]
+        # else:
+        #     base_model_name = engine.split("_")[0]
+        # loadstring = model_loadstring_dict[base_model_name] + "/" +  base_model_name
+        loadstring = engine
         tokenizer = AutoTokenizer.from_pretrained(loadstring)
-        model = AutoModelForCausalLM.from_pretrained(loadstring, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(loadstring,  device_map=None)
         print("Base model loaded, now replacing with saved state dict.")
         devices_mapper = {}
         for name, module in model.named_parameters():
@@ -32,33 +34,36 @@ def load_model(engine, checkpoints_dir, device_map = "auto", full_32_precision=F
                             bnb_4bit_use_double_quant=True,
                             bnb_4bit_compute_dtype=torch.bfloat16,
                             )
-        base_model_name = engine.split("_")[0]
-        loadstring = model_loadstring_dict[base_model_name] + "/" +  base_model_name
+        # base_model_name = engine.split("_")[0]
+        # loadstring = model_loadstring_dict[base_model_name] + "/" +  base_model_name
+        loadstring = engine
         tokenizer = AutoTokenizer.from_pretrained(loadstring)
         model = AutoPeftModelForCausalLM.from_pretrained(os.path.join(checkpoints_dir, engine), quantization_config=bnb_config, device_map=device_map)
     elif engine.endswith("lora_model"):  
-        base_model_name = engine.split("_")[0]
-        loadstring = model_loadstring_dict[base_model_name] + "/" +  base_model_name
+        # base_model_name = engine.split("_")[0]
+        # loadstring = model_loadstring_dict[base_model_name] + "/" +  base_model_name
+        loadstring = engine
         tokenizer = AutoTokenizer.from_pretrained(loadstring)
         model = AutoPeftModelForCausalLM.from_pretrained(os.path.join(checkpoints_dir, engine), device_map=device_map)
         print(f"Model loaded: {type(model)}")
     else:
-        print(engine)
-        loadstring = model_loadstring_dict[engine] + "/" +  engine
+        # print(engine)
+        # loadstring = model_loadstring_dict[engine] + "/" +  engine
+        loadstring = engine
         model = AutoModelForCausalLM.from_pretrained(loadstring, device_map=device_map)
         tokenizer = AutoTokenizer.from_pretrained(loadstring)
 
     print("Model loaded of type:", type(model))
-    if not full_32_precision:
-        if brainfloat:
-            model = model.to(torch.bfloat16)
-            print("Model activations converted to bf16 bit precision")
-        else:
-            model = model.half()
-            print("Model activations converted to fp16 bit precision")
-    else:
-        model = model.to(torch.float32)
-        print("Model activations converted to fp32 bit precision")
+    # if not full_32_precision:
+    #     if brainfloat:
+    #         model = model.to(torch.bfloat16)
+    #         print("Model activations converted to bf16 bit precision")
+    #     else:
+    #         model = model.half()
+    #         print("Model activations converted to fp16 bit precision")
+    # else:
+    #     model = model.to(torch.float32)
+    #     print("Model activations converted to fp32 bit precision")
     unique_dtypes = set()
     for name, param in model.named_parameters():
         unique_dtypes.add(param.dtype)

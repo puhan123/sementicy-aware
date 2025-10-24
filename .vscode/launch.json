@@ -1,0 +1,282 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    // {
+    //   "name": "Step 1 — GPTQ: 生成 corrupt_model (基线量化)",
+    //   "type": "python",
+    //   "request": "launch",
+    //   "module": "gptq.llama",
+    //   "cwd": "${workspaceFolder}",
+    //   "console": "integratedTerminal",
+    //   "justMyCode": false,
+    //   "env": {
+    //     "CUDA_VISIBLE_DEVICES": "${input:computeDevices}"
+    //   },
+    //   "args": [
+    //     "${input:localModel}",
+    //     "${input:dataset}",
+    //     "--true-sequential",
+    //     "--save_in_16bits",
+    //     "outputs/model_checkpoints/${input:modelName}+${input:serial}+${input:dataset}+${input:wbits}bit+quantized_model.pt",
+    //     "--wbits", "${input:wbits}",
+    //     "--seed", "${input:serial}",
+    //     "--no-eval"
+    //   ]
+    // },
+    {
+      "name": "Step 2 — Measure Importances: 计算权重重要性并保存",
+      "type": "python",
+      "request": "launch",
+      "module": "measure_importances",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "${input:computeDevices}"
+      },
+      "args": [
+        "--model", "${input:localModel}",
+        "--corrupt_model", "${input:modelName}+${input:serial}+${input:dataset}+${input:wbits}bit+quantized_model",
+        "--dataset", "${input:dataset}",
+        "--run_name", "${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test",
+        "--checkpoints_dir", "outputs/model_checkpoints",
+        "--results_dir", "outputs/importances/results",
+        "--selector_type", "${input:selector}",
+        "--serial_number", "${input:serial}",
+        // "--save_full_gradients",
+        "--save_importances_pt_path", "outputs/importances/results/${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test/importances.pt",
+        "--override_args_yaml",
+        "--plot_importances"
+      ]
+    },
+    {
+      "name": "Step 3 — Make Quant Configs: 生成细粒度位宽配置",
+      "type": "python",
+      "request": "launch",
+      "module": "make_quantization_configs",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "${input:evalDevice}"
+      },
+      "args": [
+        "--run_name", "${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test",
+        "--checkpoints_dir", "outputs/model_checkpoints",
+        "--results_dir", "outputs/importances/results",
+        "--serial_number", "${input:serial}",
+        "--importances_pt_path", "outputs/importances/results/${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test/importances.pt",
+        "--mask_save_path", "outputs/importances/results/${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test/important_mask_${input:quantType}+${input:ranking}+${input:ratio}.pt",
+        "--model", "${input:localModel}",
+        "--quantization_type", "${input:quantType}",
+        "--ranking_type", "${input:ranking}",
+        "--configs_save_path", "outputs/importances/results/${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test/quantization_configs_${input:quantType}+${input:ranking}+${input:ratio}.yaml",
+        "--mask_fraction", "${input:ratio}",
+        "--proportional_total_params",
+        "--force_recompute"
+      ]
+    },
+    {
+      "name": "Step 4 — GPTQ Fine: 按配置量化并保存 checkpoint",
+      "type": "python",
+      "request": "launch",
+      "module": "gptq.llama",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "${input:evalDevice}"
+      },
+      "args": [
+        "${input:localModel}",
+        "${input:dataset}",
+        "--true-sequential",
+        "--fine-wbits-yaml", "outputs/importances/results/${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test/quantization_configs_${input:quantType}+${input:ranking}+${input:ratio}.yaml",
+        "--save_in_16bits", "outputs/model_checkpoints/${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test+gptq_on_${input:dataset}+${input:quantType}+${input:ranking}+${input:ratio}+quantized_model.pt",
+        "--no-eval",
+        "--seed", "${input:serial}",
+        "--important_mask", "outputs/importances/results/${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test/important_mask_${input:quantType}+${input:ranking}+${input:ratio}.pt"
+      ]
+    },
+    {
+      "name": "Eval — MMLU split",
+      "type": "python",
+      "request": "launch",
+      "module": "datasets_directory.MMLU.MMLU_eval",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "${input:evalDevice}"
+      },
+      "args": [
+        "--engine", "${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test+gptq_on_${input:dataset}+${input:quantType}+${input:ranking}+${input:ratio}+quantized_model",
+        "--ntrain", "5",
+        "--data_dir", "datasets_directory/MMLU/data",
+        "--save_dir", "outputs/eval/results/${input:dataset}",
+        "--addition_dir", "outputs/model_checkpoints",
+        "--device", "cuda",
+        "--MMLU_split", "${input:mmluSplit}",
+        "--serial_number", "${input:serial}"
+      ]
+    },
+    {
+      "name": "Eval — GSM8k",
+      "type": "python",
+      "request": "launch",
+      "module": "datasets_directory.GSM8k.GSM8k_eval",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "${input:evalDevice}"
+      },
+      "args": [
+        "--model_name_or_path", "${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test+gptq_on_${input:dataset}+${input:quantType}+${input:ranking}+${input:ratio}+quantized_model",
+        "--output_dir", "outputs/eval/results/GSM8k/${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test+gptq_on_${input:dataset}+${input:quantType}+${input:ranking}+${input:ratio}+quantized_model",
+        "--data_root", "datasets_directory/GSM8k/data",
+        "--seed", "${input:serial}",
+        "--checkpoints_dir", "outputs/model_checkpoints"
+      ]
+    },
+    {
+      "name": "Eval — Perplexity (wikitext2/c4/ptb)",
+      "type": "python",
+      "request": "launch",
+      "module": "datasets_directory.pretrain_datasets.perplexity_eval_16_bit",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "${input:evalDevice}"
+      },
+      "args": [
+        "--model", "${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test+gptq_on_${input:dataset}+${input:quantType}+${input:ranking}+${input:ratio}+quantized_model",
+        "--save_dir", "outputs/eval/results/${input:pplDataset}/${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test+gptq_on_${input:dataset}+${input:quantType}+${input:ranking}+${input:ratio}+quantized_model",
+        "--addition_dir", "outputs/model_checkpoints",
+        "--device", "cuda",
+        "--serial_number", "${input:serial}",
+        "--dataset_name", "${input:pplDataset}"
+      ]
+    },
+    {
+      "name": "Eval — Spider (可选)",
+      "type": "python",
+      "request": "launch",
+      "module": "datasets_directory.Spider.Spider_eval",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "${input:evalDevice}"
+      },
+      "args": [
+        "--model", "${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test+gptq_on_${input:dataset}+${input:quantType}+${input:ranking}+${input:ratio}+quantized_model",
+        "--input", "datasets_directory/Spider/data/spider/dev.json",
+        "--tables", "datasets_directory/Spider/data/spider/tables.json",
+        "--predictions_filename", "predictions.txt",
+        "--output", "outputs/eval/results/Spider/${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test/debug.txt",
+        "--output_savedir", "outputs/eval/results/Spider/${input:modelName}+${input:serial}+${input:dataset}+${input:selector}+${input:wbits}bit+implementation_test"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "modelName",
+      "type": "promptString",
+      "description": "模型名（用于run_name拼接）",
+      "default": "Meta-Llama-3-8B-Instruct"
+    },
+    {
+      "id": "localModel",
+      "type": "promptString",
+      "description": "本地模型绝对路径",
+      "default": "/home/puhan/.cache/modelscope/hub/models/LLM-Research/Meta-Llama-3-8B-Instruct"
+    },
+    {
+      "id": "dataset",
+      "type": "pickString",
+      "description": "校准数据集 (calibration dataset)",
+      "options": [
+        "MMLU_MCQA",
+        "MMLU_humanities",
+        "MMLU_social_sciences",
+        "c4_new",
+        "GSM8k",
+        "Spider"
+      ],
+      "default": "c4_new"
+    },
+    {
+      "id": "mmluSplit",
+      "type": "pickString",
+      "description": "MMLU评测split",
+      "options": [
+        "MMLU_MCQA",
+        "MMLU_STEM",
+        "MMLU_humanities",
+        "MMLU_social_sciences"
+      ],
+      "default": "MMLU_humanities"
+    },
+    {
+      "id": "pplDataset",
+      "type": "pickString",
+      "description": "Perplexity评测数据集",
+      "options": ["wikitext2", "c4_new", "ptb_new"],
+      "default": "wikitext2"
+    },
+    {
+      "id": "serial",
+      "type": "promptString",
+      "description": "serial number (seed)",
+      "default": "0"
+    },
+    {
+      "id": "quantType",
+      "type": "pickString",
+      "description": "量化类型 (需与wbits匹配)",
+      "options": ["q2", "q3"],
+      "default": "q3"
+    },
+    {
+      "id": "wbits",
+      "type": "pickString",
+      "description": "权重量化位宽 (与quantType一致)",
+      "options": ["2", "3"],
+      "default": "3"
+    },
+    {
+      "id": "selector",
+      "type": "pickString",
+      "description": "selector_type",
+      "options": ["sample_abs_weight_prod_contrastive"],
+      "default": "sample_abs_weight_prod_contrastive"
+    },
+    {
+      "id": "ranking",
+      "type": "pickString",
+      "description": "ranking_type",
+      "options": ["top_p_sparse"],
+      "default": "top_p_sparse"
+    },
+    {
+      "id": "ratio",
+      "type": "promptString",
+      "description": "mask_fraction (例如 .0035)",
+      "default": ".0035"
+    },
+    {
+      "id": "computeDevices",
+      "type": "promptString",
+      "description": "CUDA_VISIBLE_DEVICES (计算阶段)",
+      "default": "0"
+    },
+    {
+      "id": "evalDevice",
+      "type": "promptString",
+      "description": "CUDA_VISIBLE_DEVICES (评测阶段)",
+      "default": "0"
+    }
+  ]
+}

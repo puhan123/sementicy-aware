@@ -37,6 +37,7 @@ def weight_prod_contrastive_postprocess(attributed_matrices, model, corrupt_mode
                 )
         except:
             print("Print failed")
+        #梯度重要性*（干净权重与量化权重差）*干净权重。差值放大了“被量化改动较大”的权重；再乘以干净权重本身，强调“大且被改动”的权重
         attributed_matrices[module_name] = attributed_matrices[module_name] * (model[module_name] - corrupt_model[module_name]) * model[module_name]
         try:
             print(
@@ -58,7 +59,7 @@ def weight_prod_contrastive_postprocess(attributed_matrices, model, corrupt_mode
     return attributed_matrices
 
 
-
+#完整的梯度采集流程
 def grad_attributor(args, model_name, corrupt_model_name, dataset, masking_function=None, 
                     loss_func=CrossEntropyLoss(), checkpoints_dir=None, attributor_function=sample_abs, 
                     postprocess_function=lambda x, y, z: x, record_memory_history=False, backward_in_full_32_precision=True):
@@ -75,8 +76,9 @@ def grad_attributor(args, model_name, corrupt_model_name, dataset, masking_funct
     ## Setup gradients to accumulate
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
-            accumulated_gradient.update({".".join((name, key)): torch.zeros_like(val).detach().to("cpu") for key, val in module.named_parameters() if key == "weight"})
-    accumulated_gradient = filter_importances_dict(accumulated_gradient)
+            accumulated_gradient.update({".".join((name, key)): 
+                 torch.zeros(val.shape, dtype=val.dtype, device="cpu") for key, val in module.named_parameters() if key == "weight"})
+    accumulated_gradient = filter_importances_dict(accumulated_gradient)#保留mlp、attn模块，丢弃不需要的层
     ## Setup hooks
     hook_handles = []
     for name, param in model.named_parameters():
@@ -110,6 +112,7 @@ def grad_attributor(args, model_name, corrupt_model_name, dataset, masking_funct
         shift_labels = shift_labels.to(shift_logits.device)
         loss = loss_func(shift_logits, shift_labels) 
         loss.backward()
+
         if record_memory_history:
             for i, x in model.named_parameters():
                 print("Grad should be None if save_memory=True:", f"{x.grad=}, x should not require grad {x.requires_grad=} {x.is_leaf=} {x.device=}")

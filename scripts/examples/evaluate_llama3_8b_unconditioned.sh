@@ -3,16 +3,23 @@ echo "Script Starting..."
 source tacq_venv/bin/activate
 set -x
 
-importances_dir="/importances_dir/results"
-results_dir="/eval_dir/results"
-checkpoints_dir="/model_checkpoints"
+# 放到你的工作区
+base="$HOME/workspace/TACQ/outputs"
+checkpoints_dir="$base/model_checkpoints"
+importances_dir="$base/importances/results"
+results_dir="$base/eval/results"
 
+# 确保目录存在
+mkdir -p "$checkpoints_dir" "$importances_dir" "$results_dir"
+
+model_root="/home/puhan/.cache/modelscope/hub/models/LLM-Research"
+local_model="${model_root}/Meta-Llama-3-8B-Instruct"
 model_name="Meta-Llama-3-8B-Instruct" 
-loadstring="meta-llama"
+# loadstring="meta-llama"
 datasets=("c4_new") 
 serial_numbers=(0)
 selector_types=("sample_abs_weight_prod_contrastive")
-device="0,2,3"
+device="0,1"
 eval_device="0"
 quantization_types=("q2" "q3") 
 ranking_types=("top_p_sparse") 
@@ -43,7 +50,7 @@ do
                         if [ ! -f "$checkpoints_dir/${corrupt_model_name}.pt" ]; then
                             echo "\n\nRunning gptq with run_name: ${corrupt_model_name}"
                             CUDA_VISIBLE_DEVICES=$device python -m gptq.llama \
-                                $loadstring/${model_name} \
+                                "$local_model" \
                                 $dataset \
                                 --true-sequential \
                                 --save_in_16bits $checkpoints_dir/${corrupt_model_name}.pt \
@@ -55,7 +62,7 @@ do
                         run_name="${model_name}+${serial_number}+${dataset}+${selector_type}+${wbits}bit+implementation_test"
                         echo "\n\nRunning measure_importances with run_name: ${run_name}"
                         CUDA_VISIBLE_DEVICES=$device python -m measure_importances \
-                            --model $model_name \
+                            --model "$local_model" \
                             --corrupt_model $corrupt_model_name \
                             --dataset $dataset \
                             --run_name $run_name \
@@ -105,7 +112,7 @@ do
                             --serial_number $serial_number \
                             --importances_pt_path $importances_dir/$run_name/importances.pt \
                             --mask_save_path $importances_dir/$run_name/important_mask_${quant_identifier}.pt \
-                            --model $model_name \
+                            --model "$local_model" \
                             --quantization_type $quantization_type \
                             --ranking_type $ranking_type \
                             --configs_save_path $importances_dir/$run_name/quantization_configs_${quant_identifier}.yaml \

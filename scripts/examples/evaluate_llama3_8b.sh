@@ -1,17 +1,27 @@
 #!/bin/bash
 echo "Script Starting..."
-source tacq_venv/bin/activate
+# source tacq_venv/bin/activate
 set -x
 
-importances_dir="/importances_dir/results"
-results_dir="/eval_dir/results"
-checkpoints_dir="/model_checkpoints"
-device="0,2,3"
+# 放到你的工作区
+base="$HOME/workspace/TACQ/outputs"
+checkpoints_dir="$base/model_checkpoints"
+importances_dir="$base/importances/results"
+results_dir="$base/eval/results"
+
+# 确保目录存在
+mkdir -p "$checkpoints_dir" "$importances_dir" "$results_dir"
+
+
+device="0,1"
 eval_device="0"
 
+model_root="/home/puhan/.cache/modelscope/hub/models/LLM-Research"
+local_model="${model_root}/Meta-Llama-3-8B-Instruct"
 model_name="Meta-Llama-3-8B-Instruct" 
-loadstring="meta-llama"
-datasets=("MMLU_MCQA" "MMLU_humanities" "MMLU_social_sciences" "c4_new" "GSM8k" "Spider") 
+# loadstring="meta-llama"
+# loadstring="/home/puhan/.cache/modelscope/hub/models/LLM-Research"
+datasets=("MMLU_MCQA" "MMLU_humanities" "MMLU_social_sciences" "c4_new" "GSM8k") # Spider
 serial_numbers=(0) # serial numbers can be thought of as seeds and determine the seed used to sample calibration datasets.
 selector_types=("sample_abs_weight_prod_contrastive")
 quantization_types=("q2" "q3") 
@@ -43,7 +53,7 @@ do
                         if [ ! -f "$checkpoints_dir/${corrupt_model_name}.pt" ]; then
                             echo "\n\nRunning gptq with run_name: ${corrupt_model_name}"
                             CUDA_VISIBLE_DEVICES=$device python -m gptq.llama \
-                                $loadstring/${model_name} \
+                                "$local_model" \
                                 $dataset \
                                 --true-sequential \
                                 --save_in_16bits $checkpoints_dir/${corrupt_model_name}.pt \
@@ -55,7 +65,7 @@ do
                         run_name="${model_name}+${serial_number}+${dataset}+${selector_type}+${wbits}bit+implementation_test"
                         echo "\n\nRunning measure_importances with run_name: ${run_name}"
                         CUDA_VISIBLE_DEVICES=$device python -m measure_importances \
-                            --model $model_name \
+                            --model "$local_model" \
                             --corrupt_model $corrupt_model_name \
                             --dataset $dataset \
                             --run_name $run_name \
@@ -105,7 +115,7 @@ do
                             --serial_number $serial_number \
                             --importances_pt_path $importances_dir/$run_name/importances.pt \
                             --mask_save_path $importances_dir/$run_name/important_mask_${quant_identifier}.pt \
-                            --model $model_name \
+                            --model "$local_model" \
                             --quantization_type $quantization_type \
                             --ranking_type $ranking_type \
                             --configs_save_path $importances_dir/$run_name/quantization_configs_${quant_identifier}.yaml \
@@ -116,7 +126,7 @@ do
                         quantized_model_name="${run_name}+gptq_on_${dataset}+${quant_identifier}+quantized_model"
                         echo -e "\n\nRunning gptq with run_name: ${quantized_model_name}"
                         CUDA_VISIBLE_DEVICES=$eval_device python -m gptq.llama \
-                            $loadstring/${model_name} \
+                            "$local_model" \
                             $dataset \
                             --true-sequential \
                             --fine-wbits-yaml $importances_dir/$run_name/quantization_configs_${quant_identifier}.yaml \
@@ -131,7 +141,7 @@ do
                             if [ "$calibration_dataset" = "$valid_dataset" ]; then
                                 echo "\n\nRunning MMLU_Zero_Shot_Dataset eval with run_name: ${quantized_model_name}"
                                 CUDA_VISIBLE_DEVICES=$eval_device python3 -m datasets_directory.MMLU.MMLU_eval \
-                                    --engine "${quantized_model_name}" \
+                                    --engine "$5{quantized_model_name}" \
                                     --ntrain 5 \
                                     --data_dir "datasets_directory/MMLU/data" \
                                     --save_dir "$results_dir/$calibration_dataset" \

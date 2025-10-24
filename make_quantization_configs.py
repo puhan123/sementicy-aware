@@ -15,8 +15,8 @@ from utils.quantization_utils import cross_tensor_sum, importances_to_mask_top_p
 from utils.model_utils import load_model
 # Setup
 load_dotenv()
-token = os.getenv('HUGGINGFACE_TOKEN')
-huggingface_hub.login(token=token)
+# token = os.getenv('HUGGINGFACE_TOKEN')
+# huggingface_hub.login(token=token)
 
 def main(args):
     # Save args and load importances
@@ -29,8 +29,8 @@ def main(args):
 
     # Take absolute value of importances, sometimes saved importances have negative values to keep that information for plotting.
     for key in importances.keys():
-        importances[key] = torch.abs(importances[key])
-    importances = filter_importances_dict(importances, configuration="mlp_atten_only")
+        importances[key] = torch.abs(importances[key])#重要性取绝对值；
+    importances = filter_importances_dict(importances, configuration="mlp_atten_only")#过滤只保留 MLP/Attention 等关心的模块（减少无关层）
     print("Making Quantization Configs")
     model_info = load_model(args.model, args.checkpoints_dir)
     model, tokenizer = model_info["model"], model_info["tokenizer"] 
@@ -40,7 +40,7 @@ def main(args):
         total_params = count_params(model)
     if (not os.path.exists(args.configs_save_path)) or args.force_recompute:
         # The below function allows easy TACQ compatiblity with methods that assign bit-width to different modules dynamically.
-        make_quantization_config(args, list(importances.keys()), list(importances.keys()), configuration=args.quantization_type, save_path=args.configs_save_path)
+        make_quantization_config(args, list(importances.keys()), list(importances.keys()), configuration=args.quantization_type, save_path=args.configs_save_path)#这个函数是给每个模块分配一个基准位宽。它不会对模块里的每个权重用重要性分数做细粒度决策
     else:
         print("Quantization Config already exists.")
 
