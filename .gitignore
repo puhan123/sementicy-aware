@@ -9,3 +9,8 @@ utils/gradient_attributor_implementation_2.py
 misc
 archive
 scripts/testing
+datasets/*
+opt/*
+outputs/*
+tacq_venv/*
+usr/*
