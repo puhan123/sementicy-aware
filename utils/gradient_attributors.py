@@ -87,12 +87,17 @@ def grad_attributor(args, model_name, corrupt_model_name, dataset, masking_funct
     ## Cache all gradients for the clean model
     start_time = time.time()
     cumulation_counter = 0
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
-    for example in dataloader:
+    batch_size = max(1, getattr(args, "calibration_batch_size", 1))
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    for batch_index, example in enumerate(dataloader):
         example["input_ids"] = example["input_ids"].to(args.device)
         try:
-            (cumulation_counter % 5 == 0) and print(f"Processing sample {cumulation_counter}")
-        except:
+            if batch_index % 5 == 0:
+                print(
+                    f"Processing batch {batch_index}"
+                    f" (samples processed: {cumulation_counter})"
+                )
+        except Exception:
             pass
         outputs = model(**example)
         shift_logits = outputs.logits[..., :-1, :].contiguous()  # Get rid of the prediction from the last token, since we don't have a label for it
@@ -111,7 +116,8 @@ def grad_attributor(args, model_name, corrupt_model_name, dataset, masking_funct
                 break
         del shift_logits, shift_labels, loss
         del outputs, example
-        cumulation_counter += 1
+        batch_samples = example["input_ids"].size(0)
+        cumulation_counter += batch_samples
     print(f"samples processed: {cumulation_counter}")
     # Remove all handles, dataloader, model, and clear gpu
     for hook in hook_handles:
