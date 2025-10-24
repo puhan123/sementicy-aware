@@ -14,7 +14,15 @@ import torch
 # huggingface_hub.login(token=token)
 from utils.model_utils import load_model
 from utils.gradient_attributors import grad_attributor, sample_abs, weight_prod_contrastive_postprocess
-from utils.measurement_utils import filter_importances_dict, preprocess_calibration_datasets, save_accumulated_importances
+from utils.measurement_utils import (
+    KAPPA_CI_TYPES,
+    KAPPA_SCORING_METHODS,
+    filter_importances_dict,
+    preprocess_calibration_datasets,
+    save_accumulated_importances,
+    compute_kappa_scores,
+    save_kappa_scores,
+)
 
 def main(args):
     print(f"{datetime.datetime.now()=}")
@@ -55,7 +63,28 @@ def main(args):
     else:
         raise Exception(f"Selector type {args.selector_type} not supported")
     importances = filter_importances_dict(importances, configuration="mlp_atten_only")
-    save_accumulated_importances(args, accumulated_gradient=importances, save_full_gradients=args.save_full_gradients, save_path=args.save_importances_pt_path, dtype = torch.float16 if args.save_in_float16 else torch.float32)
+    save_accumulated_importances(
+        args,
+        accumulated_gradient=importances,
+        save_full_gradients=args.save_full_gradients,
+        save_path=args.save_importances_pt_path,
+        dtype=torch.float16 if args.save_in_float16 else torch.float32,
+    )
+    if args.save_kappa_json_path is None:
+        args.save_kappa_json_path = os.path.join(
+            args.results_dir,
+            args.run_name,
+            f"kappa_scores_{args.serial_number}.json",
+        )
+    kappa_scores = compute_kappa_scores(
+        importances,
+        scoring_method=args.scoring_method,
+        ci_type=args.ci_type,
+        ci_alpha=args.ci_alpha,
+        ci_samples=args.ci_samples,
+        ci_seed=args.ci_seed,
+    )
+    save_kappa_scores(args, kappa_scores=kappa_scores, save_path=args.save_kappa_json_path)
     print(f"{datetime.datetime.now()=}")
     return {"run_name": args.run_name}
 
@@ -90,6 +119,12 @@ if __name__ == "__main__":
     parser.add_argument("--max_length", type=int, default=2048)
     parser.add_argument("--n_calibration_points", type=int, default=128)
     parser.add_argument("--force_recompute", action="store_true")
+    parser.add_argument("--scoring_method", type=str, default="mean_abs", choices=sorted(KAPPA_SCORING_METHODS))
+    parser.add_argument("--ci_type", type=str, default="none", choices=sorted(KAPPA_CI_TYPES))
+    parser.add_argument("--ci_alpha", type=float, default=0.05)
+    parser.add_argument("--ci_samples", type=int, default=256)
+    parser.add_argument("--ci_seed", type=int, default=None)
+    parser.add_argument("--save_kappa_json_path", type=str, default=None)
     args = parser.parse_args()
     args.unsupervised = True
     random.seed(int(args.serial_number))

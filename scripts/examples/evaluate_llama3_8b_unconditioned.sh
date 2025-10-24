@@ -15,6 +15,10 @@ mkdir -p "$checkpoints_dir" "$importances_dir" "$results_dir"
 model_root="/home/puhan/.cache/modelscope/hub/models/LLM-Research"
 local_model="${model_root}/Meta-Llama-3-8B-Instruct"
 model_name="Meta-Llama-3-8B-Instruct" 
+scoring_method="mean_abs"
+ci_type="bootstrap"
+ci_alpha="0.1"
+ci_samples="256"
 # loadstring="meta-llama"
 datasets=("c4_new") 
 serial_numbers=(0)
@@ -72,6 +76,11 @@ do
                             --serial_number $serial_number \
                             --save_full_gradients \
                             --save_importances_pt_path $importances_dir/$run_name/importances.pt \
+                            --scoring_method $scoring_method \
+                            --ci_type $ci_type \
+                            --ci_alpha $ci_alpha \
+                            --ci_samples $ci_samples \
+                            --save_kappa_json_path $importances_dir/$run_name/kappa_scores.json \
                             --override_args_yaml \
                             --plot_importances
                             
