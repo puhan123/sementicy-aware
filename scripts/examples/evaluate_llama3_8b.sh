@@ -9,14 +9,20 @@ checkpoints_dir="/model_checkpoints"
 device="0,2,3"
 eval_device="0"
 
-model_name="Meta-Llama-3-8B-Instruct" 
+model_name="Meta-Llama-3-8B-Instruct"
 loadstring="meta-llama"
-datasets=("MMLU_MCQA" "MMLU_humanities" "MMLU_social_sciences" "c4_new" "GSM8k" "Spider") 
+scoring_method="mean_abs"
+ci_type="bootstrap"
+ci_alpha="0.1"
+ci_samples="256"
+datasets=("MMLU_MCQA" "MMLU_humanities" "MMLU_social_sciences" "c4_new" "GSM8k" "Spider")
 serial_numbers=(0) # serial numbers can be thought of as seeds and determine the seed used to sample calibration datasets.
 selector_types=("sample_abs_weight_prod_contrastive")
 quantization_types=("q2" "q3") 
-ranking_types=("top_p_sparse") 
+ranking_types=("top_p_sparse")
 ratios=(".0035")
+kappa_module_fraction="0.25"
+kappa_module_reduction="mean"
 
 #Initiate an empty list to store all the eventual quantized model names
 declare -a quantized_model_names
@@ -65,6 +71,11 @@ do
                             --serial_number $serial_number \
                             --save_full_gradients \
                             --save_importances_pt_path $importances_dir/$run_name/importances.pt \
+                            --scoring_method $scoring_method \
+                            --ci_type $ci_type \
+                            --ci_alpha $ci_alpha \
+                            --ci_samples $ci_samples \
+                            --save_kappa_json_path $importances_dir/$run_name/kappa_scores.json \
                             --override_args_yaml \
                             --plot_importances
                             
@@ -110,6 +121,9 @@ do
                             --ranking_type $ranking_type \
                             --configs_save_path $importances_dir/$run_name/quantization_configs_${quant_identifier}.yaml \
                             --mask_fraction $ratio \
+                            --kappa_scores_path $importances_dir/$run_name/kappa_scores.json \
+                            --kappa_module_fraction $kappa_module_fraction \
+                            --kappa_module_reduction $kappa_module_reduction \
                             --proportional_total_params \
                             --force_recompute
 

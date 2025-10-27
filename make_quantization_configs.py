@@ -10,7 +10,12 @@ import numpy as np
 import torch
 import huggingface_hub
 # Supplementary
-from utils.measurement_utils import filter_importances_dict
+from utils.measurement_utils import (
+    KAPPA_MODULE_REDUCTIONS,
+    filter_importances_dict,
+    load_kappa_scores_from_json,
+    select_top_modules_by_kappa,
+)
 from utils.quantization_utils import cross_tensor_sum, importances_to_mask_top_p_sparse, count_params, make_quantization_config, save_important_mask
 from utils.model_utils import load_model
 # Setup
@@ -38,9 +43,52 @@ def main(args):
         total_params = count_params(importances)
     else:
         total_params = count_params(model)
+    high_precision_modules = list(importances.keys())
+    if args.kappa_scores_path:
+        try:
+            kappa_entries = load_kappa_scores_from_json(args.kappa_scores_path)
+            selected_modules = select_top_modules_by_kappa(
+                kappa_entries,
+                fraction=args.kappa_module_fraction,
+                reduction=args.kappa_module_reduction,
+            )
+            if selected_modules:
+                selected_set = set(selected_modules)
+                filtered = [name for name in importances.keys() if name in selected_set]
+                if filtered:
+                    high_precision_modules = filtered
+                    coverage = len(high_precision_modules) / max(len(importances), 1)
+                    print(
+                        "Selected %d/%d modules (%.2f%%) for high bitwidth using kappa scores from %s" % (
+                            len(high_precision_modules),
+                            len(importances),
+                            coverage * 100.0,
+                            args.kappa_scores_path,
+                        )
+                    )
+                else:
+                    print(
+                        "Kappa scores from %s did not match any importance keys; defaulting to baseline selection."
+                        % args.kappa_scores_path
+                    )
+            else:
+                print(
+                    "No module-level kappa scores available in %s; defaulting to baseline selection." % args.kappa_scores_path
+                )
+        except (OSError, ValueError) as exc:
+            print(
+                f"Failed to apply kappa scores from {args.kappa_scores_path}: {exc}. Falling back to default module selection."
+            )
+
     if (not os.path.exists(args.configs_save_path)) or args.force_recompute:
         # The below function allows easy TACQ compatiblity with methods that assign bit-width to different modules dynamically.
-        make_quantization_config(args, list(importances.keys()), list(importances.keys()), configuration=args.quantization_type, save_path=args.configs_save_path)
+        make_quantization_config(
+            args,
+            list(importances.keys()),
+            high_precision_modules,
+            configuration=args.quantization_type,
+            save_path=args.configs_save_path,
+        )
     else:
         print("Quantization Config already exists.")
 
@@ -91,6 +139,20 @@ if __name__ == "__main__":
     parser.add_argument("--force_recompute", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--proportional_total_params", action="store_true")
+    parser.add_argument("--kappa_scores_path", type=str, default=None, help="Optional path to neuron-level κᵢ rankings for module-aware bitwidth allocation")
+    parser.add_argument(
+        "--kappa_module_fraction",
+        type=float,
+        default=1.0,
+        help="Fraction of modules (sorted by κᵢ) to keep at the higher bitwidth when using hybrid quantization schemes",
+    )
+    parser.add_argument(
+        "--kappa_module_reduction",
+        type=str,
+        default="mean",
+        choices=sorted(KAPPA_MODULE_REDUCTIONS),
+        help="Reduction used to collapse neuron-level κᵢ scores into a per-module statistic",
+    )
     args = parser.parse_args()
     args.unsupervised = True
     random.seed(args.serial_number)
