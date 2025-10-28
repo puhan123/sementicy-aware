@@ -10,19 +10,34 @@ def load_model(engine, checkpoints_dir, device_map = "auto", full_32_precision=F
 
 
     if engine.endswith("quantized_model"):  # FULLLY SAVED MODEL
-        # if "+" in engine:
-        #     base_model_name = engine.split("+")[0].split("_")[0]
-        # else:
-        #     base_model_name = engine.split("_")[0]
-        # loadstring = model_loadstring_dict[base_model_name] + "/" +  base_model_name
-        loadstring = engine
+        if "+" in engine:
+            base_model_name = engine.split("+")[0]
+        else:
+            base_model_name = engine[: -len("quantized_model")].rstrip("-_+")
+        provider = model_loadstring_dict.get(base_model_name)
+        if provider is not None:
+            loadstring = f"{provider}/{base_model_name}"
+        else:
+            candidate_path = os.path.join(checkpoints_dir, base_model_name)
+            if os.path.isdir(candidate_path):
+                loadstring = candidate_path
+            else:
+                raise ValueError(
+                    f"Unable to resolve base model '{base_model_name}' for quantized engine '{engine}'."
+                )
         tokenizer = AutoTokenizer.from_pretrained(loadstring)
-        model = AutoModelForCausalLM.from_pretrained(loadstring,  device_map=None)
+        model = AutoModelForCausalLM.from_pretrained(
+            loadstring,
+            device_map=None,
+            torch_dtype=torch.float16 if not full_32_precision and not brainfloat else None,
+        )
         print("Base model loaded, now replacing with saved state dict.")
         devices_mapper = {}
         for name, module in model.named_parameters():
           devices_mapper[name] = module.dtype
-        loaded_state_dict = torch.load(os.path.join(checkpoints_dir, engine+".pt"))
+        loaded_state_dict = torch.load(
+            os.path.join(checkpoints_dir, engine+".pt"), map_location="cpu"
+        )
         model.load_state_dict(loaded_state_dict)
         for key, param in model.named_parameters():
             param.data = param.data.to(devices_mapper[key])
@@ -54,16 +69,20 @@ def load_model(engine, checkpoints_dir, device_map = "auto", full_32_precision=F
         tokenizer = AutoTokenizer.from_pretrained(loadstring)
 
     print("Model loaded of type:", type(model))
-    # if not full_32_precision:
-    #     if brainfloat:
-    #         model = model.to(torch.bfloat16)
-    #         print("Model activations converted to bf16 bit precision")
-    #     else:
-    #         model = model.half()
-    #         print("Model activations converted to fp16 bit precision")
-    # else:
-    #     model = model.to(torch.float32)
-    #     print("Model activations converted to fp32 bit precision")
+    can_adjust_precision = not getattr(model, "is_loaded_in_4bit", False) and not getattr(model, "is_loaded_in_8bit", False)
+    if can_adjust_precision:
+        if not full_32_precision:
+            if brainfloat:
+                model = model.to(torch.bfloat16)
+                print("Model activations converted to bf16 bit precision")
+            else:
+                model = model.to(torch.float16)
+                print("Model activations converted to fp16 bit precision")
+        else:
+            model = model.to(torch.float32)
+            print("Model activations converted to fp32 bit precision")
+    else:
+        print("Skipping precision conversion for quantized model.")
     unique_dtypes = set()
     for name, param in model.named_parameters():
         unique_dtypes.add(param.dtype)

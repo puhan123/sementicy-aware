@@ -1,4 +1,5 @@
 # Default
+import gc
 import os
 import random
 import argparse
@@ -73,49 +74,110 @@ def _register_activation_hooks(
     return activations, handles
 
 
+def _is_accelerate_dispatched(model: torch.nn.Module) -> bool:
+    """Return True when the model relies on Accelerate hooks for device placement."""
+
+    hook = getattr(model, "_hf_hook", None)
+    if hook is None:
+        return False
+    try:
+        from accelerate.hooks import BaseHook  # type: ignore
+
+        return isinstance(hook, BaseHook)
+    except Exception:
+        # If accelerate is unavailable, fall back to checking the presence of the hook.
+        return hook is not None
+
+
+def _coerce_device(device_like: str) -> torch.device:
+    if device_like == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    try:
+        return torch.device(device_like)
+    except (TypeError, ValueError):
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _resolve_execution_device(model: torch.nn.Module, requested_device: str) -> torch.device:
+    candidates: List[torch.device] = []
+
+    device_attr = getattr(model, "device", None)
+    if isinstance(device_attr, torch.device):
+        candidates.append(device_attr)
+    elif isinstance(device_attr, str):
+        try:
+            candidates.append(torch.device(device_attr))
+        except (TypeError, ValueError):
+            pass
+
+    hf_device_map = getattr(model, "hf_device_map", None)
+    if isinstance(hf_device_map, dict) and hf_device_map:
+        first_device = next(iter(hf_device_map.values()))
+        try:
+            candidates.append(torch.device(first_device))
+        except (TypeError, ValueError):
+            pass
+
+    for device in candidates:
+        if device.type != "meta" and device.type == "cuda":
+            return device
+
+    for device in candidates:
+        if device.type != "meta":
+            return device
+
+    return _coerce_device(requested_device)
+
+
+def _ensure_model_on_device(model: torch.nn.Module, device: str) -> torch.nn.Module:
+    if _is_accelerate_dispatched(model):
+        return model
+    target = _coerce_device(device)
+    return model.to(target)
+
+
 def _compute_phi_ci_kappa_importances(args, clean_model: torch.nn.Module, dataset) -> Dict[str, torch.Tensor]:
     """Compute neuron importances via φ, cᵢ, and κ statistics."""
 
     if not args.corrupt_model:
         raise ValueError("phi_ci_kappa selector requires --corrupt_model to be provided")
 
-    clean_model.eval()
-    corrupt_model = load_model(
-        args.corrupt_model,
-        checkpoints_dir=args.checkpoints_dir,
-        full_32_precision=False,
-        brainfloat=False,
-    )["model"]
-    corrupt_model.eval()
+    clean_parameter_shapes: Dict[str, torch.Size] = {}
+    for name, param in clean_model.named_parameters():
+        if not name.endswith("weight"):
+            continue
+        if ".mlp." not in name and ".self_attn." not in name:
+            continue
+        clean_parameter_shapes[name] = param.shape
 
-    clean_model.to(args.device)
-    corrupt_model.to(args.device)
+    clean_model = _ensure_model_on_device(clean_model, args.device)
+    clean_model.eval()
+
+    clean_execution_device = _resolve_execution_device(clean_model, args.device)
 
     activation_storage, handles = _register_activation_hooks(clean_model)
 
-    dataloader = DataLoader(dataset, batch_size=args.dataloader_batch_size, shuffle=False)
     clean_logits: List[torch.Tensor] = []
     corrupt_logits: List[torch.Tensor] = []
     target_tokens: List[torch.Tensor] = []
     attention_masks: List[torch.Tensor] = []
 
+    clean_dataloader = DataLoader(dataset, batch_size=args.dataloader_batch_size, shuffle=False)
+
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in clean_dataloader:
             batch = {
-                key: value.to(args.device) if hasattr(value, "to") else value
+                key: value.to(clean_execution_device) if hasattr(value, "to") else value
                 for key, value in batch.items()
             }
             model_inputs = _build_model_inputs(batch)
 
             clean_outputs = clean_model(**model_inputs)
-            corrupt_outputs = corrupt_model(**model_inputs)
 
             clean_shifted = clean_outputs.logits[..., :-1, :].contiguous().detach().cpu()
-            corrupt_shifted = corrupt_outputs.logits[..., :-1, :].contiguous().detach().cpu()
             targets = model_inputs["input_ids"][..., 1:].contiguous().detach().cpu()
 
             clean_logits.append(clean_shifted)
-            corrupt_logits.append(corrupt_shifted)
             target_tokens.append(targets)
 
             if "attention_mask" in model_inputs:
@@ -124,6 +186,45 @@ def _compute_phi_ci_kappa_importances(args, clean_model: torch.nn.Module, datase
 
     for handle in handles:
         handle.remove()
+
+    del clean_dataloader
+
+    clean_is_accelerate = _is_accelerate_dispatched(clean_model)
+    if not clean_is_accelerate:
+        clean_model = clean_model.to("cpu")
+
+    del clean_model
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    corrupt_model = load_model(
+        args.corrupt_model,
+        checkpoints_dir=args.checkpoints_dir,
+        full_32_precision=False,
+        brainfloat=False,
+    )["model"]
+
+    corrupt_model = _ensure_model_on_device(corrupt_model, args.device)
+    corrupt_model.eval()
+
+    corrupt_execution_device = _resolve_execution_device(corrupt_model, args.device)
+
+    corrupt_dataloader = DataLoader(dataset, batch_size=args.dataloader_batch_size, shuffle=False)
+
+    with torch.no_grad():
+        for batch in corrupt_dataloader:
+            batch = {
+                key: value.to(corrupt_execution_device) if hasattr(value, "to") else value
+                for key, value in batch.items()
+            }
+            model_inputs = _build_model_inputs(batch)
+
+            corrupt_outputs = corrupt_model(**model_inputs)
+
+            corrupt_shifted = corrupt_outputs.logits[..., :-1, :].contiguous().detach().cpu()
+
+            corrupt_logits.append(corrupt_shifted)
 
     clean_concat = torch.cat(clean_logits, dim=0) if clean_logits else torch.empty(0)
     corrupt_concat = torch.cat(corrupt_logits, dim=0) if corrupt_logits else torch.empty(0)
@@ -171,26 +272,23 @@ def _compute_phi_ci_kappa_importances(args, clean_model: torch.nn.Module, datase
         # Average across samples to obtain a single importance score per output neuron.
         importances[module_name] = kappa_tensor.mean(dim=0)
 
-    del corrupt_model, dataloader
-    torch.cuda.empty_cache()
-
-    clean_model.to("cpu")
+    del corrupt_model, corrupt_dataloader
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     clean_importances: Dict[str, torch.Tensor] = {}
-    for name, param in clean_model.named_parameters():
-        if not name.endswith("weight"):
-            continue
-        if ".mlp." not in name and ".self_attn." not in name:
-            continue
+    for name, shape in clean_parameter_shapes.items():
         module_name = name.rsplit(".", 1)[0]
         if module_name not in importances:
             continue
         layer_scores = importances[module_name].to(torch.float32)
-        if layer_scores.numel() != param.shape[0]:
+        if layer_scores.numel() != shape[0]:
             raise ValueError(
-                f"Kappa scores for {module_name} have shape {layer_scores.shape}, expected {param.shape[0]} entries"
+                f"Kappa scores for {module_name} have shape {layer_scores.shape}, expected {shape[0]} entries"
             )
-        expanded = layer_scores.view(-1, 1).expand_as(param.detach().cpu())
+        view_shape = (layer_scores.shape[0],) + (1,) * (len(shape) - 1)
+        expanded = layer_scores.view(view_shape).expand(shape).contiguous().clone()
         clean_importances[name] = expanded
 
     return clean_importances
